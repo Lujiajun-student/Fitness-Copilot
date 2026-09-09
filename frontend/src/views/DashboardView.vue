@@ -14,7 +14,7 @@
         <section class="section-heading"><div><span class="eyebrow">TRAINING</span><h3>训练安排</h3></div><span class="tag">{{ dayPlan.training.exercises.length }} 个训练项目</span></section>
         <div class="schedule-card">
           <article v-for="(exercise, index) in dayPlan.training.exercises" :key="index" class="schedule-row">
-            <time>{{ exercise.timeRange || "自由安排" }}</time><span class="timeline-dot"></span>
+            <time>{{ exerciseTime(dayPlan.training.exercises, index) }}</time><span class="timeline-dot"></span>
             <div><span class="tag">{{ exercise.category || dayPlan.training.type }}</span><h4>{{ exercise.name || exercise }}</h4><p>{{ exerciseDetail(exercise) }}</p></div><strong>{{ exercise.durationMinutes ? exercise.durationMinutes + " 分钟" : exercise.sets ? exercise.sets + " 组" : "" }}</strong>
           </article>
         </div>
@@ -57,7 +57,9 @@ export default {
     moveMonth: function (step) { var target = new Date(this.calendarYear, this.calendarMonth + step, 1); this.calendarYear = target.getFullYear(); this.calendarMonth = target.getMonth(); },
     selectDate: function (value) { if (value) this.selectedDateKey = value; },
     hasPlan: function (value) { var plan = this.activePlan.value; if (!plan || !plan.startDate) return false; var offset = Math.round((parseDate(value) - parseDate(plan.startDate)) / 86400000); return offset >= 0 && offset < plan.days.length; },
-    exerciseDetail: function (exercise) { if (typeof exercise === "string") return "按计划完成并注意恢复"; var parts = []; if (exercise.reps) parts.push(exercise.reps + " 次"); if (exercise.restSeconds) parts.push("组间休息 " + exercise.restSeconds + " 秒"); if (exercise.notes) parts.push(exercise.notes); return parts.join(" · ") || "按计划完成并注意恢复"; }
+    exerciseDetail: function (exercise) { if (typeof exercise === "string") return "按计划完成并注意恢复"; var parts = []; if (exercise.reps) parts.push(exercise.reps + " 次"); if (exercise.restSeconds) parts.push("组间休息 " + exercise.restSeconds + " 秒"); if (exercise.notes) parts.push(exercise.notes); return parts.join(" · ") || "按计划完成并注意恢复"; },
+    exerciseDuration: function (exercise) { if (exercise && exercise.durationMinutes) return Number(exercise.durationMinutes); var text = String((exercise && (exercise.category || exercise.name)) || exercise || "").toLowerCase(); var sets = Number(exercise && exercise.sets) || 0; if (/热身|warmup|拉伸|cooldown/.test(text)) return 8; if (/有氧|cardio|快走|骑/.test(text)) return 25; if (/核心|core/.test(text)) return Math.max(8, sets * 4); return sets ? Math.max(10, sets * 5) : 12; },
+    exerciseTime: function (exercises, index) { var first = exercises[0] || {}; var match = String(first.timeRange || "09:00").match(/(\d{1,2}):(\d{2})/); var cursor = match ? Number(match[1]) * 60 + Number(match[2]) : 540; for (var i = 0; i < index; i += 1) cursor += this.exerciseDuration(exercises[i]); var end = cursor + this.exerciseDuration(exercises[index]); var format = function (minutes) { return String(Math.floor(minutes / 60)).padStart(2, "0") + ":" + String(minutes % 60).padStart(2, "0"); }; return format(cursor) + "–" + format(end); }
   }
 };
 </script>
