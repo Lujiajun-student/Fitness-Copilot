@@ -1,0 +1,47 @@
+# Secrets and local configuration (keep shareable templates)
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Python / Agent service
+.venv/
+venv/
+env/
+ENV/
+agent-service/.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Java / Spring Boot
+backend/target/
+backend/.maven-repository/
+backend/data/
+*.h2.db
+*.mv.db
+*.trace.db
+
+# Vue / Node.js
+frontend/node_modules/
+frontend/dist/
+frontend/.cache/
+frontend/.env.local
+frontend/.env.*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE and operating system files
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini

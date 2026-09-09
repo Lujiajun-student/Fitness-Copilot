@@ -1,0 +1,24 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: fitness-copilot-backend
+  datasource:
+    url: jdbc:h2:file:./data/fitness-copilot;MODE=MySQL;DATABASE_TO_LOWER=TRUE
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+
+app:
+  jwt:
+    # 仅用于本地开发；部署时必须通过环境变量 APP_JWT_SECRET 覆盖。
+    secret: ${APP_JWT_SECRET:fitness-copilot-local-development-secret-key-change-me-2026}
+    expiration-seconds: 86400

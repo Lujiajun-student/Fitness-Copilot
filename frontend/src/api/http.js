@@ -1,0 +1,3 @@
+import { clearSession, session } from "./session";
+var baseUrl = process.env.VUE_APP_API_BASE_URL || "";
+export async function apiRequest(path, options) { var input = options || {}; var headers = Object.assign({ "Content-Type": "application/json" }, input.headers || {}); if (session.token) headers.Authorization = "Bearer " + session.token; var response = await fetch(baseUrl + path, Object.assign({}, input, { headers: headers })); var payload = response.status === 204 ? null : await response.json().catch(function () { return {}; }); if (!response.ok) { if (response.status === 401) clearSession(); throw new Error(payload.reason || payload.message || "请求失败，请稍后再试"); } return payload; }

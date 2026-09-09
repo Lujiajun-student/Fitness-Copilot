@@ -1,0 +1,14 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:fitness_copilot_test;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+
+app:
+  jwt:
+    secret: fitness-copilot-test-secret-key-change-me-2026
+    expiration-seconds: 3600
