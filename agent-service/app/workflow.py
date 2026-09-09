@@ -18,6 +18,9 @@ class PlanState(TypedDict, total=False):
     strength_proposal: dict[str, Any]
     endurance_proposal: dict[str, Any]
     debate_round: int
+    safety_revision_round: int
+    harness_approved: bool
+    harness_feedback: dict[str, Any]
     risks: list[str]
     monthly_plan: list[dict[str, Any]]
     nutrition_plan: list[dict[str, Any]]
@@ -29,6 +32,7 @@ def _context(state: PlanState) -> dict[str, Any]:
         "body_measurement": state["body"],
         "profile": state.get("profile", {}),
         "training_history": state.get("training_history", []),
+        "harness_feedback": state.get("harness_feedback", {}),
     }
 
 
@@ -76,10 +80,9 @@ def build_graph(client: DeepSeekClient | None = None):
     async def harness_node(state: PlanState) -> PlanState:
         output = await llm.json_completion(HARNESS_PROMPT, {**_context(state), "monthly_plan": state["monthly_plan"], "strength_feedback": state.get("strength_proposal", {}), "endurance_feedback": state.get("endurance_proposal", {})})
         risks = list(output.get("risks", [])) + _validate_plan(state["monthly_plan"])
-        if risks or not output.get("approved", False):
-            changes = "；".join(output.get("required_changes", [])) or "请降低训练强度并补充恢复日后重试。"
-            raise RuntimeError("安全审核未通过：" + "；".join(risks or [changes]))
-        return {"risks": []}
+        approved = bool(output.get("approved", False)) and not risks
+        feedback = {"risks": risks, "required_changes": output.get("required_changes", []) or ["请降低训练强度并补充恢复日后重试。"]}
+        return {"risks": risks, "harness_approved": approved, "harness_feedback": feedback, "safety_revision_round": state.get("safety_revision_round", 0) + (0 if approved else 1)}
 
     async def nutrition_node(state: PlanState) -> PlanState:
         output = await llm.json_completion(NUTRITION_PROMPT, {**_context(state), "monthly_plan": state["monthly_plan"]})
@@ -91,18 +94,32 @@ def build_graph(client: DeepSeekClient | None = None):
     def debate_route(state: PlanState) -> str:
         return "strength" if state.get("debate_round", 0) < 2 else "harness"
 
+    def harness_route(state: PlanState) -> str:
+        if state.get("harness_approved", False):
+            return "nutrition"
+        if state.get("safety_revision_round", 0) <= 2:
+            return "planner"
+        return "failed"
+
+    def failed_node(state: PlanState) -> PlanState:
+        feedback = state.get("harness_feedback", {})
+        reasons = feedback.get("risks") or feedback.get("required_changes") or ["计划无法满足安全约束。"]
+        raise RuntimeError("安全审核连续调整两次后仍未通过：" + "；".join(reasons))
+
     graph = StateGraph(PlanState)
     graph.add_node("planner", planner_node)
     graph.add_node("strength", strength_node)
     graph.add_node("endurance", endurance_node)
     graph.add_node("harness", harness_node)
+    graph.add_node("failed", failed_node)
     graph.add_node("nutrition", nutrition_node)
     graph.add_edge(START, "planner")
     graph.add_edge("planner", "strength")
     graph.add_edge("strength", "endurance")
     graph.add_conditional_edges("endurance", debate_route, {"strength": "strength", "harness": "harness"})
-    graph.add_edge("harness", "nutrition")
+    graph.add_conditional_edges("harness", harness_route, {"planner": "planner", "nutrition": "nutrition", "failed": "failed"})
     graph.add_edge("nutrition", END)
+    graph.add_edge("failed", END)
     return graph.compile()
 
 

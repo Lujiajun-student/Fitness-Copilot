@@ -146,7 +146,10 @@ async def generate_monthly_plan_stream(request: PlanRequest, authorization: str 
                         message = "正在重新规划训练安排" if endurance_count == 1 else "正在进行训练安全审核"
                         yield sse("stage", {"stage": "revision" if endurance_count == 1 else "harness", "message": message})
                     elif node == "harness":
-                        yield sse("stage", {"stage": "nutrition", "message": "正在规划饮食计划"})
+                        if changes.get("harness_approved"):
+                            yield sse("stage", {"stage": "nutrition", "message": "安全审核通过，正在规划饮食计划"})
+                        else:
+                            yield sse("stage", {"stage": "revision", "message": "安全审核发现风险，正在重新规划整月训练"})
             result = build_generation_response(request.goal, context["profile"], state)
             yield sse("result", result)
         except DeepSeekConfigurationError as error:
