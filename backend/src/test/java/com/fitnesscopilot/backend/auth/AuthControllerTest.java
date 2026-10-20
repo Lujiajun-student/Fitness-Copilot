@@ -19,6 +19,23 @@ class AuthControllerTest {
     private MockMvc mockMvc;
 
     @Test
+    void registrationErrorsHaveReadableMessages() throws Exception {
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"account\":\"admin\",\"password\":\"12345\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors.password").value("密码长度必须在 8 到 72 个字符之间"))
+                .andExpect(jsonPath("$.message").isNotEmpty());
+
+        String payload = "{\"account\":\"duplicate_" + System.nanoTime() + "\",\"password\":\"strong-password-123\"}";
+        mockMvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON).content(payload))
+                .andExpect(status().isCreated());
+        mockMvc.perform(post("/api/auth/register").contentType(MediaType.APPLICATION_JSON).content(payload))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("账号已存在"));
+    }
+
+    @Test
     void userCanRegisterAndLogin() throws Exception {
         String account = "test_user_" + System.nanoTime();
         String payload = "{\"account\":\"" + account + "\",\"password\":\"strong-password-123\"}";
