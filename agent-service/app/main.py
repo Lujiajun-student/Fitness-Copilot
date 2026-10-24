@@ -1,160 +1,167 @@
+import asyncio
 import json
-from datetime import date
+from uuid import UUID, uuid4
+from typing import Literal
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from app.mcp_client import BackendMcpClient
-from app.config import DeepSeekConfigurationError, get_settings
-from app.workflow import plan_graph
+from redis.exceptions import RedisError
 
-app = FastAPI(title="Fitness Copilot Agent Service", version="0.1.0")
-app.add_middleware(
-    CORSMiddleware,
+from app.config import get_settings
+from app.mcp_client import BackendMcpClient
+from app.mcp_server import backend_get
+from app.plan_document import build_plan_document, build_generation_response, missing_safety_profile_fields
+from app.state_cache import RedisStateCache, StateCacheError
+from app.task_queue import enqueue_plan
+
+app = FastAPI(title="Fitness Copilot Agent Service", version="0.2.0")
+app.add_middleware(CORSMiddleware,
     allow_origins=["http://localhost:8080", "http://localhost:8081", "http://127.0.0.1:8080", "http://127.0.0.1:8081"],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
-)
+    allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["Authorization", "Content-Type"])
+state_cache = RedisStateCache()
+
+
+class ConversationMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=3000)
 
 
 class PlanRequest(BaseModel):
-    goal: str = Field(..., min_length=1, description="User goal, such as fat loss")
+    goal: str = Field(..., min_length=1, max_length=2000)
+    requestId: UUID | None = None
+    messages: list[ConversationMessage] = Field(default_factory=list, max_length=20)
 
 
-def sse(event_type: str, payload: dict) -> str:
+def sse(event_type, payload):
     return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-def build_plan_document(goal: str, state: dict) -> dict:
-    """Merge agent outputs into one day-centric document for storage and reuse."""
-    nutrition_by_day = {item.get("day"): item for item in state["nutrition_plan"] if isinstance(item, dict)}
-    days = []
-    for training in state["monthly_plan"]:
-        day_number = training.get("day")
-        nutrition = nutrition_by_day.get(day_number)
-        if not nutrition:
-            raise RuntimeError(f"第 {day_number} 天缺少饮食计划，不能生成可用计划文档。")
-        meals = nutrition.get("meals")
-        if not isinstance(meals, list) or len(meals) != 3:
-            raise RuntimeError(f"第 {day_number} 天必须包含早餐、午餐和晚餐。")
-        days.append({
-            "day": day_number,
-            "status": "PENDING",
-            "training": {
-                "type": training.get("type"),
-                "focus": training.get("focus"),
-                "exercises": training.get("sessions", []),
-            },
-            "nutrition": {
-                "targetCalories": nutrition.get("targetCalories"),
-                "targetProteinG": nutrition.get("targetProteinG"),
-                "meals": meals,
-            },
-        })
-    if len(days) != 30:
-        raise RuntimeError("计划文档必须包含完整 30 天。")
-    return {
-        "schemaVersion": "1.0",
-        "goal": goal,
-        "startDate": date.today().isoformat(),
-        "summary": state["planner"],
-        "safetyNotes": state.get("risks", []),
-        "days": days,
-    }
+async def authenticated_context(authorization, profile_only=False):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "缺少登录凭证")
+    try:
+        if profile_only:
+            return {"profile": await backend_get("/api/users/me", authorization[7:])}
+        return await BackendMcpClient().load_user_context(authorization[7:])
+    except httpx.HTTPStatusError as error:
+        raise HTTPException(401 if error.response.status_code == 401 else 502, "登录已失效或用户资料暂不可用") from error
+    except Exception as error:
+        raise HTTPException(502, "无法读取用户资料，请检查 Java 后端") from error
 
 
-def build_generation_response(goal: str, profile: dict, state: dict) -> dict:
-    return {"status": "generated", "profile": profile, "plan": build_plan_document(goal, state)}
-
-
-def missing_safety_profile_fields(profile: dict) -> list[str]:
-    fields = {
-        "trainingExperience": "训练经验",
-        "weeklyTrainingDays": "每周可训练天数",
-        "sessionDurationMinutes": "单次可训练时长",
-        "availableTrainingTimes": "可训练时段",
-        "injuryOrMedicalNotes": "伤病或医疗限制（无也请明确填写“无”）",
-        "averageSleepHours": "平均睡眠时长",
-    }
-    return [label for key, label in fields.items() if profile.get(key) in (None, "")]
+@app.exception_handler(StateCacheError)
+@app.exception_handler(RedisError)
+async def cache_error_handler(request, error):
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=503, content={"detail": "后台任务存储不可用，请启动 Redis 并配置 REDIS_URL"})
 
 
 @app.get("/api/health")
 def health():
     settings = get_settings()
-    return {"status": "ok", "service": "agent-service", "model": settings.deepseek_model, "deepseekConfigured": settings.deepseek_configured}
+    return {"status": "ok", "service": "agent-service", "model": settings.deepseek_model,
+            "deepseekConfigured": settings.deepseek_configured, "backgroundTasksConfigured": state_cache.enabled}
 
 
-@app.post("/api/v1/plans/generate")
+@app.post("/api/v1/plans/generate", status_code=202)
+@app.post("/api/v1/assistant/messages", status_code=202)
 async def generate_monthly_plan(request: PlanRequest, authorization: str | None = Header(default=None)):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="缺少登录凭证")
+    context = await authenticated_context(authorization)
+    if not state_cache.enabled:
+        raise HTTPException(503, "请先启动 Redis，并在 .env 中配置 REDIS_URL；计划生成需要后台 Worker")
+    body = context.get("body_measurement") or {}
+    user_id = context["profile"]["userId"]
+    task_id = str(request.requestId or uuid4())
+    lock = state_cache.key(user_id, task_id) + ":submit-lock"
+    owner = str(uuid4())
+    acquired = await state_cache._client().set(lock, owner, nx=True, ex=30)
+    if not acquired:
+        raise HTTPException(409, "同一任务正在提交，请稍后重试")
     try:
-        context = await BackendMcpClient().load_user_context(authorization[7:])
-    except Exception as error:
-        raise HTTPException(status_code=502, detail="无法通过 MCP 获取用户资料：" + str(error)) from error
-    body = context["body_measurement"]
-    if not body or not body.get("heightCm") or not body.get("weightKg"):
-        raise HTTPException(status_code=422, detail="请先在个人信息页录入身高和体重")
-    missing = missing_safety_profile_fields(context["profile"])
-    if missing:
-        raise HTTPException(status_code=422, detail="请先在个人信息页补充训练与健康档案：" + "、".join(missing))
-    try:
-        state = await plan_graph.ainvoke({"goal": request.goal, "body": body, "profile": context["profile"], "training_history": context.get("training_history", [])})
-    except DeepSeekConfigurationError as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
-    except Exception as error:
-        raise HTTPException(status_code=502, detail="DeepSeek 生成计划失败：" + str(error)) from error
-    return build_generation_response(request.goal, context["profile"], state)
+        existing = await state_cache.get(user_id, task_id)
+        if existing:
+            if existing["state"].get("goal") != request.goal:
+                raise HTTPException(409, "任务 ID 已用于另一个目标")
+            return {"taskId": task_id, "status": existing["status"]}
+        state = {"goal": request.goal, "body": body, "profile": context["profile"], "training_history": context.get("training_history", []),
+                 "current_plan": context.get("current_plan"),
+                 "conversation_history": [message.model_dump() for message in request.messages]}
+        await state_cache.save(user_id, task_id, state, status="queued")
+        try:
+            await asyncio.to_thread(enqueue_plan, user_id, task_id, state)
+        except Exception as error:
+            await state_cache._client().delete(state_cache.key(user_id, task_id))
+            raise HTTPException(503, "后台队列不可用，请检查 Redis 和 Worker") from error
+        return {"taskId": task_id, "status": "queued"}
+    finally:
+        await state_cache._client().eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", 1, lock, owner)
+
+
+async def owned_snapshot(task_id, authorization):
+    context = await authenticated_context(authorization, profile_only=True)
+    snapshot = await state_cache.get(context["profile"]["userId"], str(task_id))
+    if not snapshot:
+        raise HTTPException(404, "任务不存在或已过期，请重新生成")
+    return snapshot
+
+
+def task_progress(snapshot):
+    node = snapshot.get("node")
+    next_stage = {
+        None: ("conversation", "正在思考回复"),
+        "conversation": ("planner", "正在规划训练框架"),
+        "planner": ("strength", "正在规划无氧训练"),
+        "strength": ("endurance", "正在规划有氧训练"),
+        "nutrition": ("nutrition", "正在整理计划结果"),
+    }
+    if node == "conversation" and snapshot["state"].get("intent") == "chat":
+        stage, message = ("conversation", "回复已准备好")
+    elif node == "endurance":
+        stage, message = ("revision", "正在完善训练安排") if snapshot["state"].get("debate_round", 0) < 2 else ("harness", "正在整理训练建议")
+    elif node == "harness":
+        stage, message = ("nutrition", "正在规划饮食计划")
+    else:
+        stage, message = next_stage.get(node, ("planner", "正在规划训练框架"))
+    return {"taskId": snapshot["taskId"], "status": snapshot["status"], "stage": stage,
+            "message": message, "updatedAt": snapshot["updatedAt"], "result": snapshot.get("result"), "error": snapshot.get("error")}
+
+
+@app.get("/api/v1/plans/tasks/{task_id}/state")
+async def get_task_state(task_id: UUID, authorization: str | None = Header(default=None)):
+    return await owned_snapshot(task_id, authorization)
+
+
+@app.get("/api/v1/plans/tasks/{task_id}")
+async def get_task(task_id: UUID, authorization: str | None = Header(default=None)):
+    return task_progress(await owned_snapshot(task_id, authorization))
+
+
+async def task_events(user_id, task_id):
+    while True:
+        snapshot = await state_cache.get(user_id, task_id)
+        if not snapshot:
+            yield sse("error", {"detail": "任务不存在或已过期"})
+            return
+        if snapshot["status"] == "completed":
+            yield sse("result", snapshot["result"])
+            return
+        if snapshot["status"] == "failed":
+            yield sse("error", {"detail": snapshot.get("error")})
+            return
+        yield sse("stage", task_progress(snapshot))
+        await asyncio.sleep(3)
+
+
+@app.get("/api/v1/plans/tasks/{task_id}/events")
+async def subscribe_task(task_id: UUID, authorization: str | None = Header(default=None)):
+    snapshot = await owned_snapshot(task_id, authorization)
+    return StreamingResponse(task_events(snapshot["userId"], str(task_id)), media_type="text/event-stream")
 
 
 @app.post("/api/v1/plans/generate/stream")
 async def generate_monthly_plan_stream(request: PlanRequest, authorization: str | None = Header(default=None)):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="缺少登录凭证")
-
-    async def events():
-        try:
-            yield sse("stage", {"stage": "profile", "message": "正在读取身体数据"})
-            context = await BackendMcpClient().load_user_context(authorization[7:])
-            body = context["body_measurement"]
-            if not body or not body.get("heightCm") or not body.get("weightKg"):
-                yield sse("error", {"detail": "请先在个人信息页录入身高和体重"})
-                return
-            missing = missing_safety_profile_fields(context["profile"])
-            if missing:
-                yield sse("error", {"detail": "请先在个人信息页补充训练与健康档案：" + "、".join(missing)})
-                return
-
-            state = {"goal": request.goal, "body": body, "profile": context["profile"], "training_history": context.get("training_history", [])}
-            yield sse("stage", {"stage": "planner", "message": "正在规划 30 天训练框架"})
-            strength_count = 0
-            endurance_count = 0
-            async for update in plan_graph.astream(state, stream_mode="updates"):
-                for node, changes in update.items():
-                    state.update(changes)
-                    if node == "planner":
-                        yield sse("stage", {"stage": "strength", "message": "正在规划无氧训练"})
-                    elif node == "strength":
-                        strength_count += 1
-                        message = "正在规划有氧训练" if strength_count == 1 else "正在复核力量训练安排"
-                        yield sse("stage", {"stage": "endurance", "message": message})
-                    elif node == "endurance":
-                        endurance_count += 1
-                        message = "正在重新规划训练安排" if endurance_count == 1 else "正在进行训练安全审核"
-                        yield sse("stage", {"stage": "revision" if endurance_count == 1 else "harness", "message": message})
-                    elif node == "harness":
-                        if changes.get("harness_approved"):
-                            yield sse("stage", {"stage": "nutrition", "message": "安全审核通过，正在规划饮食计划"})
-                        else:
-                            yield sse("stage", {"stage": "revision", "message": "安全审核发现风险，正在重新规划整月训练"})
-            result = build_generation_response(request.goal, context["profile"], state)
-            yield sse("result", result)
-        except DeepSeekConfigurationError as error:
-            yield sse("error", {"detail": str(error)})
-        except Exception as error:
-            yield sse("error", {"detail": "AI 计划生成失败：" + str(error)})
-
-    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    submitted = await generate_monthly_plan(request, authorization)
+    return await subscribe_task(UUID(submitted["taskId"]), authorization)

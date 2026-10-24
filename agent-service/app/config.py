@@ -19,6 +19,8 @@ class Settings:
     deepseek_base_url: str
     deepseek_model: str
     deepseek_temperature: float
+    deepseek_max_tokens: int = 8192
+    deepseek_planner_max_tokens: int = 4096
 
     @property
     def deepseek_configured(self) -> bool:
@@ -31,4 +33,6 @@ def get_settings() -> Settings:
         deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),
         deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
         deepseek_temperature=float(os.getenv("DEEPSEEK_TEMPERATURE", "0.2")),
+        deepseek_max_tokens=max(1, int(os.getenv("DEEPSEEK_MAX_TOKENS", "8192"))),
+        deepseek_planner_max_tokens=max(1, int(os.getenv("DEEPSEEK_PLANNER_MAX_TOKENS", "4096"))),
     )

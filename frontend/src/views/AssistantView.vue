@@ -1,15 +1,28 @@
 <template>
   <section class="assistant-layout">
     <div class="chat-card">
+      <div class="conversation-toolbar">
+        <div class="conversation-tabs" role="tablist" aria-label="助理会话">
+          <div v-for="item in conversations" :key="item.id" class="conversation-tab" :class="{ active: item.id === activeConversationId }">
+            <button :id="'conversation-tab-' + item.id" type="button" role="tab" class="conversation-select" :aria-selected="item.id === activeConversationId ? 'true' : 'false'" :aria-controls="'conversation-panel-' + item.id" :tabindex="item.id === activeConversationId ? 0 : -1" :title="item.title" @click="select(item.id)" @keydown.left.prevent="moveTab(-1)" @keydown.right.prevent="moveTab(1)">
+              <span v-if="item.task" class="conversation-busy" aria-label="正在处理"></span><span class="conversation-title">{{ item.title }}</span>
+            </button>
+            <button type="button" class="conversation-delete" :aria-label="'删除会话：' + item.title" :title="'删除会话：' + item.title" @click.stop="remove(item)">×</button>
+          </div>
+        </div>
+        <button type="button" class="conversation-new" @click="newConversation"><span aria-hidden="true">＋</span> 新会话</button>
+      </div>
+      <p v-if="persistenceError" class="form-error" role="alert">{{ persistenceError }}</p>
+      <div :id="'conversation-panel-' + activeConversationId" class="conversation-panel" role="tabpanel" :aria-labelledby="'conversation-tab-' + activeConversationId">
       <div class="assistant-welcome">
         <span class="assistant-orb">✦</span>
-        <div><span class="eyebrow lime">FITNESS AI · DEEPSEEK</span><h2>你的私人训练助理</h2><p>告诉我目标，我会读取你的身体数据并生成经过安全审核的 30 天训练与三餐计划。</p></div>
+        <div><span class="eyebrow lime">FITNESS COPILOT</span><h2>你的私人助理</h2><p>聊聊训练与饮食，或告诉我目标，一起制定适合你的计划。</p></div>
       </div>
-      <div class="messages" aria-live="polite">
+      <div ref="messages" class="messages" aria-live="polite" :aria-busy="loading ? 'true' : 'false'">
         <div v-for="(message, index) in messages" :key="index" class="message" :class="message.role">{{ message.content }}</div>
         <div v-if="loading" class="message ai" style="max-width:100%">
           <b>{{ currentStageMessage }}</b>
-          <div style="display:grid;gap:8px;margin-top:12px">
+          <div v-if="!isChatting" style="display:grid;gap:8px;margin-top:12px">
             <span v-for="stage in stages" v-if="stage.status !== 'pending'" :key="stage.id" :style="{ color: stage.status === 'active' ? '#587c1d' : '#6d756d' }">{{ stage.status === "done" ? "✓" : "●" }} {{ stage.label }}</span>
           </div>
         </div>
@@ -21,62 +34,70 @@
         <div v-if="firstDay" style="display:grid;gap:7px;background:#f7f9f3;padding:13px;border-radius:9px;font-size:13px"><b>第 1 天 · {{ firstDay.training.focus }}</b><span v-for="(item, index) in firstDay.training.exercises" :key="index">{{ item.name || item }}</span></div>
       </div>
       <p v-if="error" class="form-error">{{ error }}</p>
-      <form class="chat-input" @submit.prevent="send"><input v-model="draft" :disabled="loading" placeholder="例如：未来一个月减脂，每周训练 4 天" aria-label="输入给私人助理的目标"><button type="submit" :disabled="loading">{{ loading ? "生成中" : "生成计划" }}</button></form>
+      <form class="chat-input" @submit.prevent="send"><input ref="draft" v-model="draft" :disabled="loading" maxlength="2000" placeholder="聊一聊，或说：帮我制定未来一个月的训练计划" aria-label="给私人助理发消息"><button type="submit" :disabled="loading || !draft.trim()">{{ loading ? "处理中" : "发送" }}</button></form>
+      </div>
     </div>
-    <aside class="assistant-context"><span class="eyebrow">真实服务状态</span><h3>计划生成器</h3><div class="metric"><span>模型</span><b>DeepSeek</b></div><div class="metric"><span>编排</span><b>LangGraph</b></div><div class="metric"><span>安全关卡</span><b>Harness 审核</b></div><p style="font-size:12px;margin:18px 0 0">生成前请先在个人信息页录入身高和体重。</p></aside>
+    <aside class="assistant-context"><span class="eyebrow">与你一起行动</span><h3>可以这样开始</h3><div class="metric"><span>日常咨询</span><b>深蹲时怎样保持动作稳定？</b></div><div class="metric"><span>聊聊近况</span><b>最近训练后有些疲劳</b></div><div class="metric"><span>制定计划</span><b>帮我安排未来一个月的训练和三餐</b></div><p style="font-size:12px;margin:18px 0 0">会话按账号保存在当前浏览器，点击上方标签可继续旧对话。切换会话不影响后台任务；删除会话不会删除已保存的训练计划。</p></aside>
   </section>
 </template>
 
 <script>
-import { generatePlan } from "../api/agent";
-import { planApi } from "../api/fitness";
-import { setActivePlan } from "../api/plan-store";
+import { generation, startGeneration, saveDraft, createConversation, selectConversation, deleteConversation } from "../api/generation-store";
 
 export default {
-  data: function () {
-    return {
-      draft: "", loading: false, error: "", plan: null, currentStageMessage: "正在准备生成计划",
-      stages: [
-        { id: "profile", label: "读取身体数据", status: "pending" },
-        { id: "planner", label: "规划 30 天训练框架", status: "pending" },
-        { id: "strength", label: "规划无氧训练", status: "pending" },
-        { id: "endurance", label: "规划有氧训练", status: "pending" },
-        { id: "revision", label: "重新规划训练安排", status: "pending" },
-        { id: "harness", label: "训练安全审核", status: "pending" },
-        { id: "nutrition", label: "规划饮食计划", status: "pending" }
-      ],
-      messages: [{ role: "ai", content: "你好。请告诉我你的训练目标，例如“未来一个月减脂，每周可以训练四天”。" }]
-    };
-  },
-  computed: { firstDay: function () { return this.plan && this.plan.plan && this.plan.plan.days[0]; } },
-  methods: {
-    send: async function () {
-      var goal = this.draft.trim();
-      if (!goal || this.loading) return;
-      this.error = "";
-      this.messages.push({ role: "user", content: goal });
-      this.draft = "";
-      this.loading = true;
-      this.currentStageMessage = "正在准备生成计划";
-      this.stages.forEach(function (stage) { stage.status = "pending"; });
-      try {
-        var self = this;
-        this.plan = await generatePlan(goal, function (event) { self.updateStage(event); });
-        setActivePlan(this.plan.plan);
-        try { await planApi.replaceMonthly(this.plan.plan); } catch (saveError) { this.error = "计划已生成，但暂未保存到服务器：" + saveError.message; }
-        this.messages.push({ role: "ai", content: "计划已生成：包含 30 天训练和每日三餐。你可以在下方查看第 1 天预览。" });
-        this.$router.push("/");
-      } catch (error) {
-        this.error = error.message;
-        this.messages.push({ role: "ai", content: "暂时无法生成计划。请检查 Agent 服务、DeepSeek 密钥和身体数据后重试。" });
-      } finally { this.loading = false; }
-    },
-    updateStage: function (event) {
-      this.currentStageMessage = event.message;
-      var activeIndex = this.stages.findIndex(function (stage) { return stage.id === event.stage; });
-      if (activeIndex < 0) return;
-      this.stages.forEach(function (stage, index) { stage.status = index < activeIndex ? "done" : index === activeIndex ? "active" : "pending"; });
+  computed: {
+    conversations: function () { return generation.conversations; },
+    activeConversationId: function () { return generation.activeConversationId; },
+    persistenceError: function () { return generation.persistenceError; },
+    draft: { get: function () { return generation.draft; }, set: function (value) { saveDraft(value); } },
+    loading: function () { return Boolean(generation.task); },
+    isChatting: function () { return generation.stage === "conversation"; },
+    error: function () { return generation.error; },
+    plan: function () { return generation.plan; },
+    messages: function () { return generation.messages; },
+    currentStageMessage: function () { return generation.currentStageMessage; },
+    firstDay: function () { return this.plan && this.plan.plan && this.plan.plan.days[0]; },
+    stages: function () {
+      var definitions = [
+        ["profile", "读取身体数据"], ["planner", "规划 30 天训练框架"],
+        ["strength", "规划无氧训练"], ["endurance", "规划有氧训练"],
+        ["revision", "完善训练安排"], ["harness", "整理训练建议"], ["nutrition", "规划饮食计划"]
+      ];
+      var activeIndex = definitions.findIndex(function (stage) { return stage[0] === generation.stage; });
+      return definitions.map(function (stage, index) {
+        return { id: stage[0], label: stage[1], status: index < activeIndex ? "done" : index === activeIndex ? "active" : "pending" };
+      });
     }
+  },
+  watch: {
+    activeConversationId: function () {
+      this.scrollMessages();
+      this.$nextTick(function () {
+        var tab = document.getElementById("conversation-tab-" + this.activeConversationId);
+        if (tab) tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+      });
+    },
+    "messages.length": function () { this.scrollMessages(); }
+  },
+  mounted: function () { this.scrollMessages(); },
+  methods: {
+    send: function () { startGeneration(); },
+    select: function (id) { selectConversation(id); },
+    newConversation: function () { createConversation(); this.$nextTick(function () { this.$refs.draft.focus(); }); },
+    remove: function (item) {
+      var hasHistory = item.messages.some(function (message) { return message.role === "user"; });
+      var warning = item.task ? "该会话仍有后台任务。删除后将不再接收其结果，但已提交的后台任务不会被取消。" : "删除后无法恢复此会话的聊天记录和草稿。";
+      if ((hasHistory || item.task || item.draft.trim()) && !window.confirm("删除“" + item.title + "”？\n" + warning + "\n已保存的训练计划不会被删除。")) return;
+      deleteConversation(item.id);
+    },
+    moveTab: function (offset) {
+      var index = this.conversations.findIndex(function (item) { return item.id === generation.activeConversationId; });
+      var next = this.conversations[(index + offset + this.conversations.length) % this.conversations.length];
+      if (!next) return;
+      selectConversation(next.id);
+      this.$nextTick(function () { document.getElementById("conversation-tab-" + next.id).focus(); });
+    },
+    scrollMessages: function () { this.$nextTick(function () { if (this.$refs.messages) this.$refs.messages.scrollTop = this.$refs.messages.scrollHeight; }); }
   }
 };
 </script>

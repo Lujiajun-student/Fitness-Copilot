@@ -8,7 +8,7 @@
 docker compose up -d redis
 ```
 
-在 .env 配置 REDIS_URL=redis://127.0.0.1:6379/0、REDIS_STATE_TTL_SECONDS=3600、PLAN_TASK_TIMEOUT_SECONDS=1800。状态 TTL 应明显大于任务时间上限及排队时间。配置 DeepSeek 和 Java 后端地址。
+在 .env 配置 REDIS_URL=redis://127.0.0.1:6379/0、REDIS_STATE_TTL_SECONDS=86400、PLAN_TASK_TIMEOUT_SECONDS=1800。状态 TTL 应明显大于任务时间上限及排队时间。配置 DeepSeek 和 Java 后端地址。
 
 分别启动 API 和独立 Worker：
 
@@ -27,7 +27,7 @@ Windows 本地使用 solo，服务器 Linux 可使用 prefork 和合适的 concu
 - GET /api/v1/plans/tasks/{taskId}/events 订阅 SSE，支持重新订阅已完成任务，并发送心跳。
 - 原 POST /api/v1/plans/generate/stream 兼容保留：先提交，再订阅；断开不会停止 Worker。
 
-前端默认短轮询（3 秒），每次 HTTP 请求超时 10 秒；网络问题会重试。taskId 按用户存入 localStorage，刷新后打开私人助理页恢复。离开页面会中止查询，后台任务继续执行。完成后前端缓存计划并调用 Java 接口持久化，保存成功后清除任务 ID。离线期间结果保存在 Redis，须在 TTL 内回来保存。
+前端默认短轮询（3 秒），每次 HTTP 请求超时 10 秒；网络问题会重试。任务、草稿和聊天记录按用户存入 localStorage，由 App 全局状态恢复。切换菜单后继续查询，刷新后在任意菜单自动恢复。提交前先保存 requestId，提交响应丢失时重试同一 ID。完成后前端缓存计划并调用 Java 接口持久化，保存成功后清除任务 ID。保存失败自动重试；离线期间结果保存在 Redis，须在 TTL 内回来保存。退出登录时停止当前账号查询，重新登录后恢复。
 
 ## 执行和边界
 

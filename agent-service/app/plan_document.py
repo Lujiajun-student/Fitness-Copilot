@@ -39,7 +39,9 @@ def build_plan_document(goal: str, state: dict) -> dict:
 
 
 def build_generation_response(goal: str, profile: dict, state: dict) -> dict:
-    return {"status": "generated", "profile": profile, "plan": build_plan_document(goal, state)}
+    if state.get("intent") == "chat":
+        return {"status": "replied", "type": "chat", "reply": state["reply"]}
+    return {"status": "generated", "type": "plan", "reply": "已为你生成训练与饮食计划，训练建议一并附在计划中。", "profile": profile, "plan": build_plan_document(goal, state)}
 
 
 def missing_safety_profile_fields(profile: dict) -> list[str]:

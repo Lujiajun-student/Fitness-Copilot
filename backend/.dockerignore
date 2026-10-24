@@ -1,0 +1,8 @@
+target
+.maven-repository
+data
+.idea
+.git
+.env
+.env.*
+*.log

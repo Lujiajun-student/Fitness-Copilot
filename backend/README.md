@@ -42,6 +42,8 @@ mvn spring-boot:run
 
 ## 训练与计划接口
 
+计划 `goal` 字段支持最多4000个字符，超长请求返回带明确提示的400错误，不静默截断。启动时会在Hibernate初始化后检查当前H2数据库，将旧的短 `plan_document.goal` 列无损扩展为 `VARCHAR(4000)`；升级可重复执行，不删除数据库或计划记录。若以后切换数据库，需要为对应数据库提供迁移脚本。
+
 - `POST /api/training-logs`、`GET /api/training-logs`：新增/查询当前用户最近 30 条训练日志。
 - `POST /api/plans/monthly`：保存月度训练计划 JSON。
 - `POST /api/plans/nutrition-daily`：保存某日饮食计划 JSON。

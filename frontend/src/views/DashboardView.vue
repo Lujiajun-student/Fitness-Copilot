@@ -21,6 +21,9 @@
 
         <section class="section-heading"><div><span class="eyebrow">NUTRITION</span><h3>当日三餐</h3></div><span class="tag">{{ dayPlan.nutrition.targetCalories || "—" }} kcal · 蛋白质 {{ dayPlan.nutrition.targetProteinG || "—" }} g</span></section>
         <div class="meal-grid"><article v-for="(meal, index) in dayPlan.nutrition.meals" :key="meal.name" class="meal-card"><span>{{ ["☀", "◒", "☾"][index] }}</span><small>{{ meal.name }}</small><h4>{{ meal.items[0] }}</h4><p>{{ meal.items.slice(1).join(" · ") }}</p></article></div>
+        <section v-if="activePlan.value.safetyNotes && activePlan.value.safetyNotes.length" class="settings-section" style="margin-top:24px">
+          <h3>训练建议</h3><p v-for="(note, index) in activePlan.value.safetyNotes" :key="index" style="margin:12px 0 0">{{ note }}</p>
+        </section>
       </template>
     </div>
 
@@ -53,7 +56,7 @@ export default {
   },
   created: function () { this.loadPlan(); },
   methods: {
-    loadPlan: async function () { try { var saved = await planApi.latestMonthly(); if (saved && saved.content) setActivePlan(saved.content); } catch (error) { /* Local cache remains usable while the Java backend is offline. */ } },
+    loadPlan: async function () { var previous = this.activePlan.value; try { var saved = await planApi.latestMonthly(); if (saved && saved.content && previous === this.activePlan.value) setActivePlan(saved.content); } catch (error) { /* Local cache remains usable while the Java backend is offline. */ } },
     moveMonth: function (step) { var target = new Date(this.calendarYear, this.calendarMonth + step, 1); this.calendarYear = target.getFullYear(); this.calendarMonth = target.getMonth(); },
     selectDate: function (value) { if (value) this.selectedDateKey = value; },
     hasPlan: function (value) { var plan = this.activePlan.value; if (!plan || !plan.startDate) return false; var offset = Math.round((parseDate(value) - parseDate(plan.startDate)) / 86400000); return offset >= 0 && offset < plan.days.length; },

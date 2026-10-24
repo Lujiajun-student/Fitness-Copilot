@@ -48,8 +48,29 @@ class Graph:
 
 
 class BackgroundTests(unittest.IsolatedAsyncioTestCase):
+    async def test_task_diagnostic_context_is_propagated_and_reset(self):
+        from app.diagnostics import task_id as diagnostic_task_id
+        observed = []
+
+        class ContextGraph:
+            async def astream(self, state, stream_mode):
+                observed.append(diagnostic_task_id.get())
+                yield {"conversation": {"intent": "chat", "reply": "测试回复"}}
+
+        previous = diagnostic_task_id.get()
+        await execute_plan(1, "diagnostic-task", {"goal": "你好", "profile": {}}, graph=ContextGraph(), cache=self.cache)
+        self.assertEqual(observed, ["diagnostic-task"])
+        self.assertEqual(diagnostic_task_id.get(), previous)
+
     async def asyncSetUp(self):
         self.cache = RedisStateCache(client=MemoryRedis())
+
+    async def test_submission_queues_authenticated_saved_plan(self):
+        authenticated = context()
+        authenticated["current_plan"] = {"startDate": "2026-10-21", "days": [{"day": 1}]}
+        with patch.object(main, "state_cache", self.cache), patch.object(main, "authenticated_context", AsyncMock(return_value=authenticated)), patch.object(main, "enqueue_plan") as enqueue:
+            await main.generate_monthly_plan(main.PlanRequest(goal="明天练什么"), "Bearer test")
+        self.assertEqual(enqueue.call_args.args[2]["current_plan"], authenticated["current_plan"])
 
     async def test_submit_only_enqueues_and_is_idempotent(self):
         request = main.PlanRequest(goal="增肌", requestId=uuid4())
@@ -111,6 +132,26 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
                 response = await client.post("/api/v1/plans/generate", json={"goal": "增肌"}, headers={"Authorization": "Bearer test"})
         self.assertEqual(response.status_code, 202)
         self.assertIn("taskId", response.json())
+
+    async def test_chat_submission_keeps_history_without_body_requirements(self):
+        import httpx
+        with patch.object(main, "state_cache", self.cache), patch.object(main, "authenticated_context", AsyncMock(return_value={"profile": {"userId": 1}})), patch.object(main, "enqueue_plan") as enqueue:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+                response = await client.post("/api/v1/assistant/messages", json={"goal": "继续", "messages": [{"role": "assistant", "content": "你想先了解哪种训练？"}]}, headers={"Authorization": "Bearer test"})
+        self.assertEqual(response.status_code, 202)
+        state = enqueue.call_args.args[2]
+        self.assertEqual(state["conversation_history"][0]["role"], "assistant")
+        self.assertEqual(state["body"], {})
+
+    async def test_worker_returns_chat_without_plan_serialization(self):
+        class ChatGraph:
+            async def astream(self, state, stream_mode):
+                yield {"conversation": {"intent": "chat", "reply": "你好，有什么想聊的？"}}
+        await execute_plan(1, "chat", {"goal": "你好", "profile": {}}, graph=ChatGraph(), cache=self.cache)
+        snapshot = await self.cache.get(1, "chat")
+        self.assertEqual(snapshot["status"], "completed")
+        self.assertEqual(snapshot["result"]["type"], "chat")
+        self.assertNotIn("plan", snapshot["result"])
 
 
 if __name__ == "__main__":

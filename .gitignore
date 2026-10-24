@@ -10,6 +10,7 @@ venv/
 env/
 ENV/
 agent-service/.venv/
+agent-service/data/
 __pycache__/
 *.py[cod]
 *.pyo

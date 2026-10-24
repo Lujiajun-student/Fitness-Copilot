@@ -15,7 +15,7 @@ class StateCacheError(RuntimeError):
 class RedisStateCache:
     def __init__(self, url=None, ttl=None, client=None):
         self.url = url if url is not None else os.getenv("REDIS_URL", "").strip()
-        self.ttl = ttl if ttl is not None else int(os.getenv("REDIS_STATE_TTL_SECONDS", "3600"))
+        self.ttl = ttl if ttl is not None else int(os.getenv("REDIS_STATE_TTL_SECONDS", "86400"))
         if self.ttl <= 0:
             raise ValueError("REDIS_STATE_TTL_SECONDS 必须大于 0")
         self.client = client

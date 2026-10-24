@@ -31,7 +31,11 @@
           </div>
         </div>
       </header>
-      <main class="page-content"><router-view /></main>
+      <main class="page-content">
+        <p v-if="runningConversation" role="status"><router-link to="/assistant" @click.native="openRunningConversation">{{ runningConversation.currentStageMessage || '助手正在回复' }} · 点击查看</router-link></p>
+        <p v-else-if="generation.plan" role="status"><router-link to="/">计划已生成，可在今日计划中查看</router-link></p>
+        <router-view />
+      </main>
     </section>
   </div>
   <router-view v-else />
@@ -39,17 +43,21 @@
 
 <script>
 import { clearSession, session } from "./api/session";
+import { generation, restoreGeneration, selectConversation } from "./api/generation-store";
 export default {
   data: function () {
-    return { isAccountMenuOpen: false, session: session };
+    return { isAccountMenuOpen: false, session: session, generation: generation };
   },
   computed: {
+    runningConversation: function () { return this.generation.conversations.find(function (item) { return item.task; }); },
     pageTitle: function () { return this.$route.meta.title || "今日计划"; },
     isAuthenticated: function () { return Boolean(this.session.token); },
     accountInitial: function () { return this.session.account ? this.session.account.slice(0, 1) : ""; },
     avatarStyle: function () { return this.session.avatarDataUrl ? { backgroundImage: "url(" + this.session.avatarDataUrl + ")" } : {}; }
   },
+  watch: { "session.token": { immediate: true, handler: function () { restoreGeneration(); } } },
   methods: {
+    openRunningConversation: function () { if (this.runningConversation) selectConversation(this.runningConversation.id); },
     goToProfile: function () { this.isAccountMenuOpen = false; this.$router.push("/profile"); },
     logout: function () { this.isAccountMenuOpen = false; clearSession(); this.$router.push("/login"); }
   }

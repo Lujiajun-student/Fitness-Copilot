@@ -14,7 +14,7 @@ public class PlanDocument {
     private Long userId;
     @Column(nullable = false, length = 30)
     private String documentType;
-    @Column(length = 100)
+    @Column(length = 4000)
     private String goal;
     private LocalDate planDate;
     @Lob

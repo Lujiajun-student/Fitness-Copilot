@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "serve": "vue-cli-service serve",
+    "test:state": "node tests/generation-state.cjs",
     "build": "vue-cli-service build"
   },
   "dependencies": {

@@ -5,6 +5,7 @@ import os
 import httpx
 from mcp.server.fastmcp import FastMCP
 from app.config import get_settings
+from app.rag import retrieve_with_rerank
 
 mcp = FastMCP("fitness-backend-tools")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8080").rstrip("/")
@@ -29,6 +30,24 @@ async def backend_post(path: str, access_token: str, payload: dict) -> dict:
 
 
 @mcp.tool()
+async def retrieve_strength_knowledge(query: str, limit: int = 10) -> str:
+    """Search only the strength Agent's allowed knowledge scopes."""
+    return json.dumps(await retrieve_with_rerank("strength", query, limit), ensure_ascii=False)
+
+
+@mcp.tool()
+async def retrieve_endurance_knowledge(query: str, limit: int = 10) -> str:
+    """Search only the endurance Agent's allowed knowledge scopes."""
+    return json.dumps(await retrieve_with_rerank("endurance", query, limit), ensure_ascii=False)
+
+
+@mcp.tool()
+async def retrieve_nutrition_knowledge(query: str, limit: int = 10) -> str:
+    """Search only the nutrition Agent's allowed knowledge scopes."""
+    return json.dumps(await retrieve_with_rerank("nutrition", query, limit), ensure_ascii=False)
+
+
+@mcp.tool()
 async def get_current_user(access_token: str) -> str:
     """Return the authenticated user's account profile as JSON."""
     return json.dumps(await backend_get("/api/users/me", access_token), ensure_ascii=False)
@@ -38,6 +57,12 @@ async def get_current_user(access_token: str) -> str:
 async def get_latest_body_measurement(access_token: str) -> str:
     """Return the authenticated user's latest body measurement as JSON."""
     return json.dumps(await backend_get("/api/body-measurements/latest", access_token), ensure_ascii=False)
+
+
+@mcp.tool()
+async def get_current_monthly_plan(access_token: str) -> str:
+    """Return the authenticated user's latest saved monthly plan, or {} if absent."""
+    return json.dumps(await backend_get("/api/plans/monthly/latest", access_token), ensure_ascii=False)
 
 
 @mcp.tool()
